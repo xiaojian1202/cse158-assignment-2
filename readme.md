@@ -1,70 +1,56 @@
-# 🏎️ F1 Race DNA Recommender System
+# 🏎️ F1 Pre-Race Excitement Forecaster
 
 ## 1. Project Goal
-We are building a **Content-Based Recommender System** for Formula 1 races. 
+We are building a **Binary Classifier** to predict the "Entertainment Value" of a Formula 1 race *before it starts*.
 
-Unlike standard "Winner Prediction" models, our goal is to quantify the "Vibe" or "DNA" of every race. We treat races as items with distinct statistical personalities (e.g., "Chaotic," "Strategic," "Boring") and recommend similar races to users based on these features.
-
-**The User Story:**
-> *"I loved the 2021 Abu Dhabi GP because of the chaos and last-lap drama. What other historical races should I watch?"*
+**The Problem:** Casual fans often skip races because they fear they will be boring processions.
+**The Solution:** A machine learning model that analyzes **Pre-Race Data** (Qualifying, Standings, Track Layout) to predict if the upcoming race will be **"Exciting" (1)** or **"Boring" (0)**.
 
 ---
 
-## 2. Data Source
-**Dataset:** [Formula 1 World Championship (1950 - 2024)](https://www.kaggle.com/datasets/rohanrao/formula-1-world-championship-1950-2020?resource=download)
-
-**Setup Instructions:**
-1. Download the dataset from the link above.
-2. Unzip the files.
-3. Place the `.csv` files into a folder named `data/` in your project root.
-
-### Schema & Usage
-We only need 5 specific files from the dataset to build our metrics:
-
-| File Name | Description | Metric Usage |
-| :--- | :--- | :--- |
-| **`races.csv`** | Race metadata (Date, Year, Circuit). | **Indexing:** Groups results by `raceId`. |
-| **`results.csv`** | Finishing positions & time gaps. | **Tension Metric:** Calculates gap between P1 & P2. |
-| **`status.csv`** | Explains `statusId` (e.g., Collision, Engine). | **Chaos Metric:** Identifies crashes vs. normal finishes. |
-| **`lap_times.csv`** | Lap-by-lap positions for drivers. | **Action Metric:** Counts total overtakes. |
-| **`pit_stops.csv`** | Pit stop timings and counts. | **Strategy Metric:** Calculates avg. stops per driver. |
+## 2. Dataset
+**Source:** [Formula 1 World Championship (1950 - 2024)](https://www.kaggle.com/datasets/rohanrao/formula-1-world-championship-1950-2020?resource=download)
+[Weather Dataset](https://www.kaggle.com/datasets/mariyakostyrya/formula-1-weather-info-1950-2024)
+**Key Files Used:**
+* `qualifying.csv` (Grid positions)
+* `driver_standings.csv` (Championship context)
+* `circuits.csv` (Track characteristics)
+* `lap_times.csv` & `status.csv` (Used *only* to generate training labels)
 
 ---
 
-## 3. Metric Implementation Guide (Formulas & Logic)
+## 3. Methodology: The Supervised Pipeline
 
-To capture the "DNA" of a race, we will engineer 4 custom scores.
+Our project is divided into two distinct engineering phases: **Label Generation** (determining the ground truth) and **Feature Engineering** (creating the inputs).
 
-### 🔴 Metric A: The Chaos Score
-**Definition:** A measure of disruption. High score = Demolition Derby. Low score = Clean race.
-* **Logic:** We count **DNFs** (Did Not Finish). A "Normal" finish usually has a `statusId` of 1 (Finished) or 11-19 (+1 Lap). Any other status implies a crash or mechanical failure.
-* **Formula:**
-    $$\text{Chaos Score} = \frac{\text{Count of Non-Finishers}}{\text{Total Drivers}}$$
+### Phase A: Defining "Excitement" (The Target Variable $Y$)
+Since "Excitement" is subjective, we calculate it mathematically using post-race metrics.
+* **Logic:** A race is labeled **1 (Exciting)** if it meets *either* of these criteria:
+    * **High Chaos:** Top 25% of races with the most DNFs/Crashes.
+    * **High Action:** Top 25% of races with the most Overtakes.
+* **Otherwise:** It is labeled **0 (Boring)**.
 
-### 🟢 Metric B: The Action Score
-**Definition:** A measure of on-track volatility. High score = Constant position changes.
-* **Logic:** We calculate the absolute difference in position for every driver between Lap $N$ and Lap $N-1$.
-* **Formula:**
-    $$\text{Action} = \sum_{\text{lap}=2}^{\text{last}} \sum_{\text{driver}} | \text{Pos}_{\text{lap}} - \text{Pos}_{\text{lap}-1} |$$
-* **Note:** The `lap_times.csv` file is large (~500k rows). Filter by `raceId` before processing to save memory.
+### Phase B: Pre-Race Features (The Inputs $X$)
+We train the model using **only** data available on Kaggle sets (Pre-Race). Pre-Race is defined as any type of data that can be gathered before a race starts such point difference between two drivers. We strictly avoid data leakage (e.g., we cannot use "Number of Pit Stops" because that happens *during* the race).
 
-### 🔵 Metric C: The Tension Score
-**Definition:** A measure of the winning margin. High score = Photo finish.
-* **Logic:** Find the time gap (in milliseconds) between 1st Place and 2nd Place. We take the inverse (1000 / gap) so that smaller gaps result in higher scores.
-* **Formula:**
-    $$\text{Tension} = \frac{1000}{\text{Time Gap (ms)}}$$
-
-### 🟣 Metric D: The Strategy Score
-**Definition:** A measure of strategic activity. High score = Multi-stop race.
-* **Logic:** Calculate the average number of pit stops per driver.
-* **Formula:**
-    $$\text{Strategy} = \frac{\text{Total Pit Stops in Race}}{\text{Total Drivers}}$$
+| Feature Name | Source File | Logic | Why it matters? |
+| :--- | :--- | :--- | :--- |
+| **Grid Spread** | `qualifying.csv` | Std. Dev of Q3 lap times (Top 10). | Low spread = Cars are equal speed = Close racing. |
+| **Title Tension** | `driver_standings.csv` | Std. Dev of points among Top 3 drivers. | Low deviation = Close title fight = Drivers take more risks. |
+| **Track Altitude** | `circuits.csv` | Numeric altitude (meters). | High altitude mean thinner air, impacting performance(Chaos). |
+| **Grid Mix-Up** | `qualifying.csv` | Difference between Driver's Grid Position and Season Avg. | Fast cars starting at the back (e.g., penalties) likely suggest overtakes. |
 
 ---
 
-## 4. Modeling Strategy
-Once we generate these 4 numbers for every race, we will use **Cosine Similarity**.
+## 4. Models & Evaluation
+We treat this as a **Category Prediction** task (Binary Classification).
 
-1.  **Normalize:** Scale all metrics to 0-1 (so "Chaos" doesn't overpower "Tension") using `MinMaxScaler`.
-2.  **Vectorize:** Every race becomes a vector: `[0.8, 0.2, 0.9, 0.1]`.
-3.  **Recommend:** Calculate the distance between the User's Input Race and all other races. Return the top 5 closest matches.
+### Models
+1.  **Logistic Regression:** Baseline model to check linear relationships.
+2.  **Random Forest Classifier:** Main model. Handles non-linear interactions.
+
+### Evaluation Metrics
+Since "Exciting" races are the minority class (imbalanced data), **Accuracy** is a bad metric. We focus on:
+* **Precision:** If we predict "Exciting," are we right? (Avoids false hype).
+* **Recall:** Did we catch all the truly chaotic races?
+* **F1-Score:** The harmonic mean of Precision and Recall.
